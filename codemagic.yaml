@@ -1,16 +1,15 @@
 workflows:
-  ios-debug-build:
-    name: PillPal iOS Unsigned
+  android-debug:
+    name: PillPal Android APK
     max_build_duration: 60
-    instance_type: mac_mini_m2
+    instance_type: linux_x2    # free Linux instance — no cost
     environment:
-      node: 20.17.0        # pinned — "20.x" range fails on Codemagic Mac agents
-      xcode: latest
-      cocoapods: default
+      node: 20.17.0
+      java: 17
       vars:
         BUNDLE_ID: "com.pillpal.mobile"
       groups:
-        - supabase_env     # EXPO_PUBLIC_SUPABASE_URL + EXPO_PUBLIC_SUPABASE_ANON_KEY
+        - supabase_env         # EXPO_PUBLIC_SUPABASE_URL + EXPO_PUBLIC_SUPABASE_ANON_KEY
 
     scripts:
       - name: Install dependencies
@@ -18,33 +17,16 @@ workflows:
         script: |
           npm install
 
-      - name: Expo Prebuild — generate native iOS project
+      - name: Expo Prebuild — generate native Android project
         working_directory: $CM_BUILD_DIR
         script: |
-          npx expo prebuild --platform ios --clean
+          npx expo prebuild --platform android --clean
 
-      - name: Install CocoaPods
-        working_directory: $CM_BUILD_DIR/ios
+      - name: Build Debug APK
+        working_directory: $CM_BUILD_DIR/android
         script: |
-          pod install
-
-      - name: Discover Xcode workspace name
-        working_directory: $CM_BUILD_DIR/ios
-        script: |
-          # Prints the workspace found so we can verify in logs
-          WORKSPACE=$(find . -name "*.xcworkspace" -maxdepth 1 | head -1)
-          echo "Found workspace: $WORKSPACE"
-          echo "XCODE_WORKSPACE=$WORKSPACE" >> $CM_ENV
-
-      - name: Build Unsigned IPA
-        working_directory: $CM_BUILD_DIR
-        script: |
-          xcode-project build-ipa \
-            --workspace "ios/$XCODE_WORKSPACE" \
-            --scheme "pillpalmobile" \
-            --config Release \
-            --no-codesign
+          ./gradlew assembleDebug --no-daemon
 
     artifacts:
-      - build/ios/ipa/*.ipa
-      - /tmp/xcodebuild_logs/*.log
+      - android/app/build/outputs/apk/debug/app-debug.apk
+      - android/app/build/outputs/**/*.apk
