@@ -9,7 +9,7 @@ workflows:
       vars:
         BUNDLE_ID: "com.pillpal.mobile"
       groups:
-        - supabase_env          # Add EXPO_PUBLIC_SUPABASE_URL + EXPO_PUBLIC_SUPABASE_ANON_KEY here
+        - supabase_env
       ios_signing:
         distribution_type: app_store
         bundle_identifier: com.pillpal.mobile
@@ -47,10 +47,3 @@ workflows:
     artifacts:
       - build/ios/ipa/*.ipa
       - /tmp/xcodebuild_logs/*.log
-
-    publishing:
-      app_store_connect:
-        api_key: $APP_STORE_CONNECT_PRIVATE_KEY
-        key_id: $APP_STORE_CONNECT_KEY_IDENTIFIER
-        issuer_id: $APP_STORE_CONNECT_ISSUER_ID
-        submit_to_testflight: true
