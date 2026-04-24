@@ -4,35 +4,47 @@ workflows:
     max_build_duration: 60
     instance_type: mac_mini_m2
     environment:
-      node: 20.x
+      node: 20.17.0        # pinned — "20.x" range fails on Codemagic Mac agents
       xcode: latest
       cocoapods: default
       vars:
         BUNDLE_ID: "com.pillpal.mobile"
       groups:
-        - supabase_env
+        - supabase_env     # EXPO_PUBLIC_SUPABASE_URL + EXPO_PUBLIC_SUPABASE_ANON_KEY
 
     scripts:
       - name: Install dependencies
+        working_directory: $CM_BUILD_DIR
         script: |
           npm install
 
-      - name: Expo Prebuild
+      - name: Expo Prebuild — generate native iOS project
+        working_directory: $CM_BUILD_DIR
         script: |
           npx expo prebuild --platform ios --clean
 
       - name: Install CocoaPods
+        working_directory: $CM_BUILD_DIR/ios
         script: |
-          cd ios && pod install
+          pod install
+
+      - name: Discover Xcode workspace name
+        working_directory: $CM_BUILD_DIR/ios
+        script: |
+          # Prints the workspace found so we can verify in logs
+          WORKSPACE=$(find . -name "*.xcworkspace" -maxdepth 1 | head -1)
+          echo "Found workspace: $WORKSPACE"
+          echo "XCODE_WORKSPACE=$WORKSPACE" >> $CM_ENV
 
       - name: Build Unsigned IPA
+        working_directory: $CM_BUILD_DIR
         script: |
-          # The --no-codesign flag is the "magic" that bypasses the $99 check
           xcode-project build-ipa \
-            --workspace "ios/pillpalmobile.xcworkspace" \
+            --workspace "ios/$XCODE_WORKSPACE" \
             --scheme "pillpalmobile" \
             --config Release \
             --no-codesign
 
     artifacts:
       - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
