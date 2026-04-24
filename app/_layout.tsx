@@ -1,4 +1,5 @@
 import { useEffect } from 'react'
+ import { View, Text, ActivityIndicator, StyleSheet } from 'react-native'
 import { Stack, useRouter, useSegments } from 'expo-router'
 import { StatusBar } from 'expo-status-bar'
 import { GestureHandlerRootView } from 'react-native-gesture-handler'
@@ -35,6 +36,18 @@ function AuthGuard() {
     }
   }, [session, loading, profile, device])
 
+  // Show branded splash while Supabase resolves the session
+  if (loading) {
+    return (
+      <View style={loadingStyles.container}>
+        <Text style={loadingStyles.logo}>💊</Text>
+        <Text style={loadingStyles.title}>PillPal</Text>
+        <ActivityIndicator size="large" color="#6366f1" style={{ marginTop: 32 }} />
+        <Text style={loadingStyles.subtitle}>Loading your profile...</Text>
+      </View>
+    )
+  }
+
   return null
 }
 
@@ -53,3 +66,26 @@ export default function RootLayout() {
     </GestureHandlerRootView>
   )
 }
+
+// ── Loading splash styles ─────────────────────────────────────────────────────
+const loadingStyles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#0f172a',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  logo: { fontSize: 64 },
+  title: {
+    fontSize: 32,
+    fontWeight: '800',
+    color: '#f8fafc',
+    letterSpacing: -0.5,
+  },
+  subtitle: {
+    fontSize: 14,
+    color: '#475569',
+    marginTop: 8,
+  },
+})

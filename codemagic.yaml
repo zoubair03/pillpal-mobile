@@ -1,0 +1,56 @@
+workflows:
+  ios-release:
+    name: PillPal iOS Release
+    max_build_duration: 60
+    environment:
+      node: 20.x
+      xcode: latest
+      cocoapods: default
+      vars:
+        BUNDLE_ID: "com.pillpal.mobile"
+      groups:
+        - supabase_env          # Add EXPO_PUBLIC_SUPABASE_URL + EXPO_PUBLIC_SUPABASE_ANON_KEY here
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: com.pillpal.mobile
+
+    scripts:
+      - name: Install dependencies
+        script: |
+          cd $CM_BUILD_DIR
+          npm install
+
+      - name: Expo Prebuild — generate native iOS project
+        script: |
+          cd $CM_BUILD_DIR
+          npx expo prebuild --platform ios --clean
+
+      - name: Install CocoaPods
+        script: |
+          cd $CM_BUILD_DIR/ios
+          pod install
+
+      - name: Set version from package.json
+        script: |
+          cd $CM_BUILD_DIR
+          VERSION=$(node -e "console.log(require('./package.json').version)")
+          cd ios
+          agvtool new-marketing-version "$VERSION"
+
+      - name: Build .ipa
+        script: |
+          xcode-project build-ipa \
+            --workspace "$CM_BUILD_DIR/ios/pillpalmobile.xcworkspace" \
+            --scheme "pillpalmobile" \
+            --config Release
+
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+
+    publishing:
+      app_store_connect:
+        api_key: $APP_STORE_CONNECT_PRIVATE_KEY
+        key_id: $APP_STORE_CONNECT_KEY_IDENTIFIER
+        issuer_id: $APP_STORE_CONNECT_ISSUER_ID
+        submit_to_testflight: true

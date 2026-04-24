@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
   ScrollView, ActivityIndicator, Alert, FlatList
@@ -36,14 +36,15 @@ export default function DeviceSetupScreen() {
   }
 
   // Watch for BLE success → go to register step
-  if (step === 'provisioning' && ble.status === 'success') {
+  useEffect(() => {
+    if (step !== 'provisioning' || ble.status !== 'success') return
     // Extract serial from device name e.g. "PillPal-SN-A1B2C3"
     const name = ble.selectedDevice?.name ?? ''
     const sn   = name.replace('PillPal-', '')
     if (sn && !serialNumber) setSerialNumber(sn)
-    // eslint-disable-next-line react-hooks/rules-of-hooks — intentional
-    setTimeout(() => setStep('register'), 500)
-  }
+    const timer = setTimeout(() => setStep('register'), 500)
+    return () => clearTimeout(timer)
+  }, [step, ble.status])
 
   // ── Step 3: Register device to account ────────────────────────────────────
   const handleRegister = async () => {
