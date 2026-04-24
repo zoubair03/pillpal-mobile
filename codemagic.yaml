@@ -1,7 +1,8 @@
 workflows:
-  ios-release:
-    name: PillPal iOS Release
+  ios-debug-build:
+    name: PillPal iOS Unsigned
     max_build_duration: 60
+    instance_type: mac_mini_m2
     environment:
       node: 20.x
       xcode: latest
@@ -10,40 +11,28 @@ workflows:
         BUNDLE_ID: "com.pillpal.mobile"
       groups:
         - supabase_env
-      ios_signing:
-        distribution_type: app_store
-        bundle_identifier: com.pillpal.mobile
 
     scripts:
       - name: Install dependencies
         script: |
-          cd $CM_BUILD_DIR
           npm install
 
-      - name: Expo Prebuild — generate native iOS project
+      - name: Expo Prebuild
         script: |
-          cd $CM_BUILD_DIR
           npx expo prebuild --platform ios --clean
 
       - name: Install CocoaPods
         script: |
-          cd $CM_BUILD_DIR/ios
-          pod install
+          cd ios && pod install
 
-      - name: Set version from package.json
+      - name: Build Unsigned IPA
         script: |
-          cd $CM_BUILD_DIR
-          VERSION=$(node -e "console.log(require('./package.json').version)")
-          cd ios
-          agvtool new-marketing-version "$VERSION"
-
-      - name: Build .ipa
-        script: |
+          # The --no-codesign flag is the "magic" that bypasses the $99 check
           xcode-project build-ipa \
-            --workspace "$CM_BUILD_DIR/ios/pillpalmobile.xcworkspace" \
+            --workspace "ios/pillpalmobile.xcworkspace" \
             --scheme "pillpalmobile" \
-            --config Release
+            --config Release \
+            --no-codesign
 
     artifacts:
       - build/ios/ipa/*.ipa
-      - /tmp/xcodebuild_logs/*.log
