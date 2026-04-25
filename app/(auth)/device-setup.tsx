@@ -53,16 +53,13 @@ export default function DeviceSetupScreen() {
   // ── Fetch WiFi List ────────────────────────────────────────────────────────
   const fetchWifi = async () => {
     setFetchingWifi(true)
-    // Give ESP32 a moment to finish its internal scan
-    setTimeout(async () => {
-      const list = await ble.getWifiList()
-      setWifiNetworks(list)
-      setFetchingWifi(false)
-    }, 2000)
+    const list = await ble.getWifiList()
+    setWifiNetworks(list)
+    setFetchingWifi(false)
   }
 
   useEffect(() => {
-    if (step === 'wifi' && ble.selectedDevice) {
+    if (step === 'wifi') {
       fetchWifi()
     }
   }, [step, ble.selectedDevice])
@@ -82,21 +79,11 @@ export default function DeviceSetupScreen() {
     if (!ssid.trim()) { Alert.alert('Missing SSID', 'Please select or enter your WiFi name.'); return }
     setStep('wait')
     
-    // Retry logic for "Device not connected"
     try {
       await ble.provision(ssid.trim(), wifiPass)
     } catch (err: any) {
-      if (err.message.includes('not connected')) {
-        // Try to reconnect and provision again
-        try {
-          if (ble.selectedDevice) {
-            await ble.connect(ble.selectedDevice)
-            await ble.provision(ssid.trim(), wifiPass)
-          }
-        } catch (retryErr) {
-          console.error('Retry failed:', retryErr)
-        }
-      }
+      console.error('Provision error:', err)
+      // Don't immediately fail; let the status monitor handle it
     }
   }
 

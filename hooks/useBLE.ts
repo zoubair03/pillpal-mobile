@@ -56,12 +56,48 @@ function fromBase64(b64: string): string {
   return new TextDecoder().decode(bytes)
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
 export function useBLE(): UseBLEReturn {
   const manager        = useRef(new BleManager()).current
+  const lastDeviceIdRef = useRef<string | null>(null)
+  const lastDeviceNameRef = useRef<string | null>(null)
   const [status, setStatus]               = useState<BLEStatus>('idle')
   const [statusMessage, setStatusMessage] = useState('Ready to scan')
   const [foundDevices, setFoundDevices]   = useState<Device[]>([])
   const [selectedDevice, setSelectedDevice] = useState<Device | null>(null)
+
+  const ensureDeviceConnected = useCallback(async (): Promise<Device | null> => {
+    try {
+      if (selectedDevice) {
+        const connected = await selectedDevice.isConnected()
+        if (connected) return selectedDevice
+      }
+
+      const targetId = selectedDevice?.id ?? lastDeviceIdRef.current
+      if (!targetId) return null
+
+      const reconnected = await manager.connectToDevice(targetId, { autoConnect: false })
+      if (Platform.OS === 'android') {
+        await reconnected.requestMTU(512)
+      }
+      await reconnected.discoverAllServicesAndCharacteristics()
+
+      lastDeviceIdRef.current = reconnected.id
+      lastDeviceNameRef.current = reconnected.name ?? reconnected.id
+      setSelectedDevice(reconnected)
+      setStatus('connected')
+      setStatusMessage(`Reconnected to ${lastDeviceNameRef.current}`)
+      return reconnected
+    } catch (err: any) {
+      setSelectedDevice(null)
+      setStatus('error')
+      setStatusMessage(`Device disconnected: ${err.message}`)
+      return null
+    }
+  }, [manager, selectedDevice])
 
   // ── Android BLE permissions (Android 12+) ──────────────────────────────────
   const requestAndroidPermissions = useCallback(async (): Promise<boolean> => {
@@ -145,20 +181,47 @@ export function useBLE(): UseBLEReturn {
       }
       
       await connected.discoverAllServicesAndCharacteristics()
+      lastDeviceIdRef.current = connected.id
+      lastDeviceNameRef.current = connected.name ?? connected.id
       setSelectedDevice(connected)
       setStatus('connected')
       setStatusMessage(`Connected to ${device.name ?? device.id}`)
+
+      // Monitor for device disconnection and try to reconnect
+      manager.onDeviceDisconnected(connected.id, async (error) => {
+        console.warn('[BLE] Device disconnected:', error?.message)
+        
+        // Don't immediately clear state; try to reconnect silently
+        try {
+          await sleep(500)
+          const reconnected = await manager.connectToDevice(connected.id, { autoConnect: false })
+          if (Platform.OS === 'android') {
+            await reconnected.requestMTU(512)
+          }
+          await reconnected.discoverAllServicesAndCharacteristics()
+          setSelectedDevice(reconnected)
+          setStatusMessage('Reconnected to device')
+          console.log('[BLE] Reconnected successfully')
+        } catch (reconnectErr) {
+          console.warn('[BLE] Reconnection failed:', reconnectErr)
+          setSelectedDevice(null)
+          setStatus('idle')
+          setStatusMessage('Device disconnected.')
+        }
+      })
     } catch (err: any) {
       setStatus('error')
       setStatusMessage(`Connection failed: ${err.message}`)
+      throw err
     }
   }, [manager])
 
   // ── Provision ──────────────────────────────────────────────────────────────
   const provision = useCallback(async (ssid: string, password: string) => {
-    if (!selectedDevice) {
+    let device = await ensureDeviceConnected()
+    if (!device) {
       setStatus('error')
-      setStatusMessage('No device connected.')
+      setStatusMessage('No device connected. Reconnect and try again.')
       return
     }
 
@@ -166,76 +229,132 @@ export function useBLE(): UseBLEReturn {
     setStatusMessage('Sending WiFi credentials...')
 
     try {
-      // Write SSID
-      await selectedDevice.writeCharacteristicWithResponseForService(
-        BLE_SERVICE_UUID, BLE_SSID_UUID, toBase64(ssid)
-      )
-      // Write Password
-      await selectedDevice.writeCharacteristicWithResponseForService(
-        BLE_SERVICE_UUID, BLE_PASS_UUID, toBase64(password)
-      )
+      // Attempt to write credentials with multiple retries on disconnection
+      let writeOk = false
+      let lastWriteError: any = null
+
+      for (let attempt = 0; attempt < 4; attempt++) {
+        try {
+          await device.writeCharacteristicWithResponseForService(
+            BLE_SERVICE_UUID, BLE_SSID_UUID, toBase64(ssid)
+          )
+          await sleep(300)
+          await device.writeCharacteristicWithResponseForService(
+            BLE_SERVICE_UUID, BLE_PASS_UUID, toBase64(password)
+          )
+          writeOk = true
+          break
+        } catch (err: any) {
+          lastWriteError = err
+          const msg = String(err?.message ?? '').toLowerCase()
+          const disconnected = msg.includes('not connected') || msg.includes('disconnected')
+          
+          if (disconnected) {
+            if (attempt < 3) {
+              setStatusMessage(`Connection lost, reconnecting... (attempt ${attempt + 1}/3)`)
+              await sleep(500)
+              const reconnected = await ensureDeviceConnected()
+              if (!reconnected) break
+              device = reconnected
+            }
+          } else {
+            // Non-connection error, don't retry
+            break
+          }
+        }
+      }
+
+      if (!writeOk) {
+        throw lastWriteError ?? new Error('Failed to send credentials.')
+      }
 
       setStatus('waiting_wifi')
       setStatusMessage('Credentials sent! Waiting for ESP32 to connect to WiFi...')
 
       // Subscribe to status notifications from ESP32
-      selectedDevice.monitorCharacteristicForService(
-        BLE_SERVICE_UUID, BLE_STATUS_UUID,
-        (error, characteristic) => {
-          if (error) return
-          if (!characteristic?.value) return
-          const msg = fromBase64(characteristic.value)
-          if (msg.startsWith('CONNECTED')) {
-            setStatus('success')
-            setStatusMessage('✅ Device connected to WiFi successfully!')
-          } else if (msg.startsWith('FAILED')) {
-            setStatus('error')
-            setStatusMessage('❌ WiFi connection failed. Check your credentials.')
-          } else {
-            setStatusMessage(msg)
+      // Keep reconnecting if the device drops
+      const subscribeToStatus = () => {
+        device!.monitorCharacteristicForService(
+          BLE_SERVICE_UUID, BLE_STATUS_UUID,
+          async (error, characteristic) => {
+            if (error) {
+              console.warn('[BLE Monitor] Error:', error.message)
+              // Try to reconnect and resubscribe
+              const reconnected = await ensureDeviceConnected()
+              if (reconnected) {
+                subscribeToStatus()
+              }
+              return
+            }
+            
+            if (!characteristic?.value) return
+            const msg = fromBase64(characteristic.value)
+            
+            if (msg.startsWith('CONNECTED')) {
+              setStatus('success')
+              setStatusMessage('✅ Device connected to WiFi successfully!')
+            } else if (msg.startsWith('FAILED')) {
+              setStatus('error')
+              setStatusMessage('❌ WiFi connection failed. Check your credentials.')
+            } else if (msg === 'CREDENTIALS_RECEIVED') {
+              setStatusMessage('✓ Credentials received. Connecting to WiFi...')
+            } else if (msg.startsWith('CONNECTING')) {
+              setStatusMessage('Connecting to WiFi...')
+            } else {
+              setStatusMessage(msg)
+            }
           }
-        }
-      )
+        )
+      }
+
+      subscribeToStatus()
     } catch (err: any) {
       setStatus('error')
       setStatusMessage(`Failed to send credentials: ${err.message}`)
     }
-  }, [selectedDevice])
+  }, [ensureDeviceConnected])
 
   // ── Get WiFi List ──────────────────────────────────────────────────────────
   const getWifiList = useCallback(async (): Promise<string[]> => {
-    if (!selectedDevice) return []
+    const device = await ensureDeviceConnected()
+    if (!device) return []
+
     try {
-      // First try a direct read
-      const char = await selectedDevice.readCharacteristicForService(
-        BLE_SERVICE_UUID, BLE_WIFI_LIST_UUID
-      )
-      if (!char?.value) return []
-      const listStr = fromBase64(char.value)
-      
-      // If it's still scanning, wait and retry once
-      if (listStr === 'SCANNING...') {
-        await new Promise(r => setTimeout(r, 2000))
-        const retryChar = await selectedDevice.readCharacteristicForService(
+      // ESP32 scan can take several seconds; poll until ready.
+      for (let attempt = 0; attempt < 12; attempt++) {
+        const char = await device.readCharacteristicForService(
           BLE_SERVICE_UUID, BLE_WIFI_LIST_UUID
         )
-        if (!retryChar?.value) return []
-        const retryStr = fromBase64(retryChar.value)
-        if (retryStr === 'SCANNING...' || retryStr === 'NONE') return []
-        return retryStr.split(',').filter(s => s.length > 0)
+        if (!char?.value) {
+          await sleep(800)
+          continue
+        }
+
+        const listStr = fromBase64(char.value)
+        if (listStr === 'SCANNING...') {
+          await sleep(1000)
+          continue
+        }
+        if (listStr === 'NONE') return []
+
+        return listStr
+          .split(',')
+          .map(s => s.trim())
+          .filter(s => s.length > 0)
       }
 
-      if (listStr === 'NONE') return []
-      return listStr.split(',').filter(s => s.length > 0)
+      return []
     } catch (err) {
       console.error('Failed to read wifi list:', err)
       return []
     }
-  }, [selectedDevice])
+  }, [ensureDeviceConnected])
 
   // ── Disconnect ─────────────────────────────────────────────────────────────
   const disconnect = useCallback(() => {
     selectedDevice?.cancelConnection()
+    lastDeviceIdRef.current = null
+    lastDeviceNameRef.current = null
     setSelectedDevice(null)
     setStatus('idle')
     setStatusMessage('Disconnected.')
