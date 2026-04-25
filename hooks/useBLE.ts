@@ -13,10 +13,11 @@ import { BleManager, Device, State } from 'react-native-ble-plx'
 import base64 from 'base64-js'
 
 // UUIDs ── must match your ESP32 firmware ─────────────────────────────────────
-export const BLE_SERVICE_UUID  = '12345678-1234-5678-1234-56789abcdef0'
-export const BLE_SSID_UUID     = '12345678-1234-5678-1234-56789abcdef1'
-export const BLE_PASS_UUID     = '12345678-1234-5678-1234-56789abcdef2'
-export const BLE_STATUS_UUID   = '12345678-1234-5678-1234-56789abcdef3'
+export const BLE_SERVICE_UUID   = '12345678-1234-5678-1234-56789abcdef0'
+export const BLE_SSID_UUID      = '12345678-1234-5678-1234-56789abcdef1'
+export const BLE_PASS_UUID      = '12345678-1234-5678-1234-56789abcdef2'
+export const BLE_STATUS_UUID    = '12345678-1234-5678-1234-56789abcdef3'
+export const BLE_WIFI_LIST_UUID = '12345678-1234-5678-1234-56789abcdef4'
 
 // ESP32 advertises this local name
 const DEVICE_PREFIX = 'PillPal'
@@ -40,6 +41,7 @@ interface UseBLEReturn {
   scan:           () => Promise<void>
   connect:        (device: Device) => Promise<void>
   provision:      (ssid: string, password: string) => Promise<void>
+  getWifiList:    () => Promise<string[]>
   disconnect:     () => void
   reset:          () => void
 }
@@ -194,6 +196,23 @@ export function useBLE(): UseBLEReturn {
     }
   }, [selectedDevice])
 
+  // ── Get WiFi List ──────────────────────────────────────────────────────────
+  const getWifiList = useCallback(async (): Promise<string[]> => {
+    if (!selectedDevice) return []
+    try {
+      const char = await selectedDevice.readCharacteristicForService(
+        BLE_SERVICE_UUID, BLE_WIFI_LIST_UUID
+      )
+      if (!char?.value) return []
+      const listStr = fromBase64(char.value)
+      if (listStr === 'SCANNING...' || listStr === 'NONE') return []
+      return listStr.split(',').filter(s => s.length > 0)
+    } catch (err) {
+      console.error('Failed to read wifi list:', err)
+      return []
+    }
+  }, [selectedDevice])
+
   // ── Disconnect ─────────────────────────────────────────────────────────────
   const disconnect = useCallback(() => {
     selectedDevice?.cancelConnection()
@@ -211,6 +230,6 @@ export function useBLE(): UseBLEReturn {
 
   return {
     status, statusMessage, foundDevices, selectedDevice,
-    scan, connect, provision, disconnect, reset
+    scan, connect, provision, getWifiList, disconnect, reset
   }
 }

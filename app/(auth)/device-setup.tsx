@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
   ScrollView, ActivityIndicator, Animated, Platform,
-  KeyboardAvoidingView, Alert
+  KeyboardAvoidingView, Alert, FlatList
 } from 'react-native'
 import { useRouter } from 'expo-router'
 import { Ionicons } from '@expo/vector-icons'
@@ -24,11 +24,13 @@ export default function DeviceSetupScreen() {
   const ble                = useBLE()
   const { registerDevice } = useSupabase()
 
-  const [step,         setStep]         = useState<SetupStep>('scan')
-  const [ssid,         setSsid]         = useState('')
-  const [wifiPass,     setWifiPass]     = useState('')
-  const [serialNumber, setSerialNumber] = useState('')
-  const [loading,      setLoading]      = useState(false)
+  const [step,          setStep]         = useState<SetupStep>('scan')
+  const [ssid,          setSsid]         = useState('')
+  const [wifiPass,      setWifiPass]     = useState('')
+  const [serialNumber,  setSerialNumber] = useState('')
+  const [loading,       setLoading]      = useState(false)
+  const [wifiNetworks,  setWifiNetworks] = useState<string[]>([])
+  const [fetchingWifi,  setFetchingWifi] = useState(false)
   
   const fadeAnim = useRef(new Animated.Value(0)).current
   const slideAnim = useRef(new Animated.Value(20)).current
@@ -48,6 +50,23 @@ export default function DeviceSetupScreen() {
     }
   }, [ble.selectedDevice])
 
+  // ── Fetch WiFi List ────────────────────────────────────────────────────────
+  const fetchWifi = async () => {
+    setFetchingWifi(true)
+    // Give ESP32 a moment to finish its internal scan
+    setTimeout(async () => {
+      const list = await ble.getWifiList()
+      setWifiNetworks(list)
+      setFetchingWifi(false)
+    }, 2000)
+  }
+
+  useEffect(() => {
+    if (step === 'wifi' && ble.selectedDevice) {
+      fetchWifi()
+    }
+  }, [step, ble.selectedDevice])
+
   // ── Logic: Step 1 → Step 2 ────────────────────────────────────────────────
   const onSelectDevice = async (device: Device) => {
     try {
@@ -60,9 +79,25 @@ export default function DeviceSetupScreen() {
 
   // ── Logic: Step 2 → Step 3 ────────────────────────────────────────────────
   const onSendCredentials = async () => {
-    if (!ssid.trim()) { Alert.alert('Missing SSID', 'Please enter your WiFi name.'); return }
+    if (!ssid.trim()) { Alert.alert('Missing SSID', 'Please select or enter your WiFi name.'); return }
     setStep('wait')
-    await ble.provision(ssid.trim(), wifiPass)
+    
+    // Retry logic for "Device not connected"
+    try {
+      await ble.provision(ssid.trim(), wifiPass)
+    } catch (err: any) {
+      if (err.message.includes('not connected')) {
+        // Try to reconnect and provision again
+        try {
+          if (ble.selectedDevice) {
+            await ble.connect(ble.selectedDevice)
+            await ble.provision(ssid.trim(), wifiPass)
+          }
+        } catch (retryErr) {
+          console.error('Retry failed:', retryErr)
+        }
+      }
+    }
   }
 
   // ── Logic: Step 3 → Step 4 ────────────────────────────────────────────────
@@ -200,16 +235,43 @@ export default function DeviceSetupScreen() {
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>Connect to WiFi</Text>
               <Text style={styles.sectionDesc}>
-                PillPal needs WiFi to sync your medication schedule with the cloud.
+                Select your network from the list below or enter it manually.
               </Text>
 
               <View style={styles.inputGroup}>
-                <Text style={styles.label}>WiFi Network Name (SSID)</Text>
+                <View style={styles.labelRow}>
+                  <Text style={styles.label}>WiFi Network (SSID)</Text>
+                  {fetchingWifi && <ActivityIndicator size="small" color="#6366f1" />}
+                </View>
+
+                {/* WiFi Selection List */}
+                {wifiNetworks.length > 0 ? (
+                  <View style={styles.wifiList}>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingBottom: 10 }}>
+                      {wifiNetworks.map((net, i) => (
+                        <TouchableOpacity 
+                          key={i} 
+                          style={[styles.wifiChip, ssid === net && styles.wifiChipActive]}
+                          onPress={() => setSsid(net)}
+                        >
+                          <Ionicons name="wifi" size={14} color={ssid === net ? '#fff' : '#64748b'} />
+                          <Text style={[styles.wifiChipText, ssid === net && styles.wifiChipTextActive]}>{net}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </ScrollView>
+                  </View>
+                ) : !fetchingWifi && (
+                  <TouchableOpacity style={styles.rescanWifi} onPress={fetchWifi}>
+                    <Ionicons name="refresh-outline" size={14} color="#6366f1" />
+                    <Text style={styles.rescanWifiText}>Rescan WiFi networks</Text>
+                  </TouchableOpacity>
+                )}
+
                 <View style={styles.inputWrap}>
                   <Ionicons name="wifi-outline" size={18} color="#64748b" style={styles.inputIcon} />
                   <TextInput 
                     style={styles.input}
-                    placeholder="MyHomeWiFi"
+                    placeholder="Or enter SSID manually"
                     placeholderTextColor="#475569"
                     value={ssid}
                     onChangeText={setSsid}
@@ -393,7 +455,8 @@ const styles = StyleSheet.create({
   emptyState: { alignItems: 'center', paddingVertical: 40, gap: 12 },
   emptyText: { color: '#475569', fontSize: 13, textAlign: 'center' },
 
-  inputGroup: { gap: 8 },
+  inputGroup: { gap: 10 },
+  labelRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   label: { fontSize: 13, fontWeight: '700', color: '#94a3b8' },
   inputWrap: { 
     flexDirection: 'row', alignItems: 'center', backgroundColor: '#0f172a', 
@@ -401,6 +464,18 @@ const styles = StyleSheet.create({
   },
   inputIcon: { marginRight: 10 },
   input: { flex: 1, color: '#f8fafc', fontSize: 15, paddingVertical: 16 },
+
+  wifiList: { marginTop: 4 },
+  wifiChip: { 
+    flexDirection: 'row', alignItems: 'center', gap: 6, 
+    paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, 
+    backgroundColor: '#0f172a', borderWidth: 1, borderColor: '#334155' 
+  },
+  wifiChipActive: { backgroundColor: '#6366f1', borderColor: '#818cf8' },
+  wifiChipText: { color: '#94a3b8', fontSize: 12, fontWeight: '600' },
+  wifiChipTextActive: { color: '#fff' },
+  rescanWifi: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 4 },
+  rescanWifiText: { color: '#6366f1', fontSize: 12, fontWeight: '600' },
 
   statusIconWrap: { 
     width: 100, height: 100, borderRadius: 32, 
