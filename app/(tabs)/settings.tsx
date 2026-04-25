@@ -97,6 +97,16 @@ export default function SettingsScreen() {
             <Ionicons name="log-out-outline" size={22} color="#94a3b8" />
             <Text style={[styles.actionText, { color: '#94a3b8' }]}>Sign Out</Text>
           </TouchableOpacity>
+
+          <View style={styles.divider} />
+
+          <TouchableOpacity 
+            style={styles.actionRow} 
+            onPress={() => router.push('/(auth)/device-setup')}
+          >
+            <Ionicons name="wifi-outline" size={22} color="#6366f1" />
+            <Text style={[styles.actionText, { color: '#6366f1' }]}>Reconfigure Device WiFi (BLE)</Text>
+          </TouchableOpacity>
         </View>
 
         <Text style={styles.version}>PillPal Mobile v1.0.0</Text>

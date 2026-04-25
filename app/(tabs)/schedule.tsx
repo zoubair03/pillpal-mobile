@@ -1,5 +1,6 @@
+import { useState } from 'react'
 import {
-  View, Text, StyleSheet, ScrollView, TouchableOpacity
+  View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, ActivityIndicator
 } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { Ionicons } from '@expo/vector-icons'
@@ -17,10 +18,35 @@ function todayIndex(): number {
 
 export default function ScheduleScreen() {
   const { dispensedByWheel, dispense } = useSupabase()
+  const [dispensing, setDispensing] = useState<{ wheel: WheelName, dayIdx: number } | null>(null)
   const today = todayIndex()
 
   const isDispensed = (wheel: WheelName, dayIdx: number) =>
     (dispensedByWheel[wheel] ?? []).includes(dayIdx + 1) // slot 1-7
+
+  const handleManualDispense = (wheel: WheelName, dayIdx: number) => {
+    const dayName = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'][dayIdx]
+    const wheelName = wheel.charAt(0).toUpperCase() + wheel.slice(1)
+
+    Alert.alert(
+      'Manual Dispense',
+      `Would you like to manually dispense the ${wheelName} dose for ${dayName}?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { 
+          text: 'Dispense Now', 
+          onPress: async () => {
+            setDispensing({ wheel, dayIdx })
+            const res = await dispense(wheel, dayIdx + 1)
+            setDispensing(null)
+            if (!res.ok) {
+              Alert.alert('Error', res.error ?? 'Could not trigger device.')
+            }
+          }
+        }
+      ]
+    )
+  }
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -71,18 +97,28 @@ export default function ScheduleScreen() {
 
               {WHEELS.map(wheel => {
                 const done = isDispensed(wheel, dayIdx)
+                const isLoading = dispensing?.wheel === wheel && dispensing?.dayIdx === dayIdx
+
                 return (
                   <TouchableOpacity
                     key={wheel}
                     style={styles.wheelCol}
-                    onPress={() => !done && dispense(wheel, dayIdx + 1)}
-                    activeOpacity={done ? 1 : 0.7}
+                    onPress={() => !done && !isLoading && handleManualDispense(wheel, dayIdx)}
+                    disabled={done || isLoading}
+                    activeOpacity={0.7}
                   >
-                    <View style={[styles.cell, done ? styles.cellDone : styles.cellPending]}>
-                      {done
-                        ? <Ionicons name="checkmark" size={16} color="#10b981" />
-                        : <View style={styles.cellEmpty} />
-                      }
+                    <View style={[
+                      styles.cell, 
+                      done ? styles.cellDone : styles.cellPending,
+                      isLoading && styles.cellLoading
+                    ]}>
+                      {isLoading ? (
+                        <ActivityIndicator size="small" color="#6366f1" />
+                      ) : done ? (
+                        <Ionicons name="checkmark" size={16} color="#10b981" />
+                      ) : (
+                        <View style={styles.cellEmpty} />
+                      )}
                     </View>
                   </TouchableOpacity>
                 )
@@ -120,5 +156,6 @@ const styles = StyleSheet.create({
   cell:             { width: 32, height: 32, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
   cellDone:         { backgroundColor: '#052e16', borderWidth: 1, borderColor: '#166534' },
   cellPending:      { backgroundColor: '#1e293b', borderWidth: 1, borderColor: '#334155' },
+  cellLoading:      { borderColor: '#6366f1' },
   cellEmpty:        { width: 8, height: 8, borderRadius: 4, backgroundColor: '#334155' },
 })

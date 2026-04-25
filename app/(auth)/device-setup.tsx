@@ -1,298 +1,422 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
-  ScrollView, ActivityIndicator, Alert, FlatList
+  ScrollView, ActivityIndicator, Animated, Platform,
+  KeyboardAvoidingView, Alert
 } from 'react-native'
-import { Ionicons } from '@expo/vector-icons'
 import { useRouter } from 'expo-router'
+import { Ionicons } from '@expo/vector-icons'
 import { useBLE } from '@/hooks/useBLE'
 import { useSupabase } from '@/hooks/useSupabase'
 import type { Device } from 'react-native-ble-plx'
 
-type Step = 'scan' | 'wifi' | 'provisioning' | 'register' | 'done'
+type SetupStep = 'scan' | 'wifi' | 'wait' | 'register' | 'success'
+
+const STEPS = [
+  { id: 'scan',     label: 'Scan',   icon: 'bluetooth-outline' },
+  { id: 'wifi',     label: 'WiFi',   icon: 'wifi-outline' },
+  { id: 'wait',     label: 'Link',   icon: 'sync-outline' },
+  { id: 'register', label: 'Ready',  icon: 'checkmark-circle-outline' },
+]
 
 export default function DeviceSetupScreen() {
-  const router                = useRouter()
-  const ble                   = useBLE()
-  const { registerDevice }    = useSupabase()
+  const router             = useRouter()
+  const ble                = useBLE()
+  const { registerDevice } = useSupabase()
 
-  const [step,         setStep]         = useState<Step>('scan')
+  const [step,         setStep]         = useState<SetupStep>('scan')
   const [ssid,         setSsid]         = useState('')
   const [wifiPass,     setWifiPass]     = useState('')
   const [serialNumber, setSerialNumber] = useState('')
-  const [regLoading,   setRegLoading]   = useState(false)
+  const [loading,      setLoading]      = useState(false)
+  
+  const fadeAnim = useRef(new Animated.Value(0)).current
+  const slideAnim = useRef(new Animated.Value(20)).current
 
-  // ── Step 1: Scan & Connect ─────────────────────────────────────────────────
-  const handleConnect = async (device: Device) => {
-    await ble.connect(device)
-    setStep('wifi')
-  }
-
-  // ── Step 2: Enter WiFi & Provision ────────────────────────────────────────
-  const handleProvision = async () => {
-    if (!ssid.trim()) { Alert.alert('Error', 'Please enter your WiFi network name.'); return }
-    await ble.provision(ssid.trim(), wifiPass)
-    setStep('provisioning')
-  }
-
-  // Watch for BLE success → go to register step
   useEffect(() => {
-    if (step !== 'provisioning' || ble.status !== 'success') return
-    // Extract serial from device name e.g. "PillPal-SN-A1B2C3"
-    const name = ble.selectedDevice?.name ?? ''
-    const sn   = name.replace('PillPal-', '')
-    if (sn && !serialNumber) setSerialNumber(sn)
-    const timer = setTimeout(() => setStep('register'), 500)
-    return () => clearTimeout(timer)
-  }, [step, ble.status])
+    Animated.parallel([
+      Animated.timing(fadeAnim, { toValue: 1, duration: 400, useNativeDriver: true }),
+      Animated.timing(slideAnim, { toValue: 0, duration: 400, useNativeDriver: true }),
+    ]).start()
+  }, [step])
 
-  // ── Step 3: Register device to account ────────────────────────────────────
-  const handleRegister = async () => {
-    if (!serialNumber.trim()) { Alert.alert('Error', 'Please enter the device serial number.'); return }
-    setRegLoading(true)
-    const { error } = await registerDevice(serialNumber.trim())
-    setRegLoading(false)
-    if (error) { Alert.alert('Error', String(error)); return }
-    setStep('done')
+  // ── Auto-extract Serial Number when connected ──────────────────────────────
+  useEffect(() => {
+    if (ble.selectedDevice?.name?.startsWith('PillPal-SN-')) {
+      const sn = ble.selectedDevice.name.replace('PillPal-', '')
+      setSerialNumber(sn)
+    }
+  }, [ble.selectedDevice])
+
+  // ── Logic: Step 1 → Step 2 ────────────────────────────────────────────────
+  const onSelectDevice = async (device: Device) => {
+    try {
+      await ble.connect(device)
+      setStep('wifi')
+    } catch (err) {
+      Alert.alert('Connection Failed', 'Could not connect to the device. Please try again.')
+    }
   }
 
-  // ── Done ──────────────────────────────────────────────────────────────────
-  if (step === 'done') {
-    return (
-      <View style={[styles.container, styles.center]}>
-        <Text style={{ fontSize: 72 }}>✅</Text>
-        <Text style={styles.doneTitle}>Device Ready!</Text>
-        <Text style={styles.doneSubtitle}>
-          Your PillPal dispenser is connected and registered.
-        </Text>
-        <TouchableOpacity
-          style={styles.btn}
-          onPress={() => router.replace('/(tabs)')}
-        >
-          <Text style={styles.btnText}>Go to Dashboard</Text>
-        </TouchableOpacity>
-      </View>
-    )
+  // ── Logic: Step 2 → Step 3 ────────────────────────────────────────────────
+  const onSendCredentials = async () => {
+    if (!ssid.trim()) { Alert.alert('Missing SSID', 'Please enter your WiFi name.'); return }
+    setStep('wait')
+    await ble.provision(ssid.trim(), wifiPass)
   }
+
+  // ── Logic: Step 3 → Step 4 ────────────────────────────────────────────────
+  useEffect(() => {
+    if (step === 'wait' && ble.status === 'success') {
+      setTimeout(() => setStep('register'), 1000)
+    }
+  }, [ble.status, step])
+
+  // ── Logic: Final Registration ──────────────────────────────────────────────
+  const onFinalRegister = async () => {
+    if (!serialNumber) { Alert.alert('Missing Serial', 'Device serial number not found.'); return }
+    setLoading(true)
+    const { error } = await registerDevice(serialNumber)
+    setLoading(false)
+    if (error) {
+      Alert.alert('Registration Error', error.message)
+    } else {
+      setStep('success')
+    }
+  }
+
+  // ── Sub-component: Step Indicator ──────────────────────────────────────────
+  const StepIndicator = () => (
+    <View style={styles.stepsRow}>
+      {STEPS.map((s, i) => {
+        const isActive = s.id === step || (step === 'success' && s.id === 'register')
+        const isDone   = (step === 'wifi' && i < 1) || 
+                         (step === 'wait' && i < 2) || 
+                         (step === 'register' && i < 3) ||
+                         (step === 'success')
+        
+        return (
+          <View key={s.id} style={styles.stepItem}>
+            <View style={[
+              styles.stepCircle,
+              isActive && styles.stepCircleActive,
+              isDone && styles.stepCircleDone
+            ]}>
+              <Ionicons 
+                name={isDone ? 'checkmark' : s.icon as any} 
+                size={16} 
+                color={isActive || isDone ? '#fff' : '#64748b'} 
+              />
+            </View>
+            <Text style={[styles.stepLabel, isActive && styles.stepLabelActive]}>{s.label}</Text>
+            {i < STEPS.length - 1 && <View style={styles.stepLine} />}
+          </View>
+        )
+      })}
+    </View>
+  )
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.inner}>
-      {/* Header */}
-      <View style={styles.header}>
-        <Text style={styles.step}>Step 2 of 2</Text>
-        <Text style={styles.title}>Connect Device</Text>
-        <Text style={styles.subtitle}>Set up your PillPal dispenser via Bluetooth</Text>
-      </View>
-
-      {/* Progress */}
-      <View style={styles.progressRow}>
-        <View style={styles.progressDot} />
-        <View style={styles.progressLine} />
-        <View style={[styles.progressDot, styles.progressActive]} />
-      </View>
-
-      {/* ── SCAN STEP ─────────────────────────────────────────────────────── */}
-      {step === 'scan' && (
-        <View style={styles.section}>
-          <Text style={styles.instruction}>
-            Make sure your PillPal device is powered on and in provisioning mode (LED should be blinking blue).
-          </Text>
-
-          <TouchableOpacity
-            style={[styles.btn, ble.status === 'scanning' && styles.btnDisabled]}
-            onPress={ble.scan}
-            disabled={ble.status === 'scanning'}
+    <KeyboardAvoidingView 
+      style={styles.container} 
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+    >
+      <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+        
+        <View style={styles.header}>
+          <TouchableOpacity 
+            style={styles.backBtn} 
+            onPress={() => {
+              if (router.canGoBack()) {
+                router.back()
+              } else {
+                router.replace('/(auth)/login')
+              }
+            }}
           >
-            {ble.status === 'scanning'
-              ? <><ActivityIndicator color="#fff" style={{ marginRight: 8 }} />
-                  <Text style={styles.btnText}>Scanning...</Text></>
-              : <><Ionicons name="bluetooth" size={18} color="#fff" style={{ marginRight: 8 }} />
-                  <Text style={styles.btnText}>Scan for Devices</Text></>
-            }
+            <Ionicons name="arrow-back" size={24} color="#94a3b8" />
           </TouchableOpacity>
+          <Text style={styles.headerTitle}>Device Setup</Text>
+          <View style={{ width: 24 }} />
+        </View>
 
-          <Text style={styles.statusMsg}>{ble.statusMessage}</Text>
+        <StepIndicator />
 
-          {/* Device list */}
-          {ble.foundDevices.length > 0 && (
-            <View style={styles.deviceList}>
-              <Text style={styles.sectionLabel}>Found Devices</Text>
-              {ble.foundDevices.map(device => (
-                <TouchableOpacity
-                  key={device.id}
-                  style={styles.deviceRow}
-                  onPress={() => handleConnect(device)}
-                >
-                  <Ionicons name="hardware-chip" size={22} color="#6366f1" />
-                  <View style={{ flex: 1, marginLeft: 12 }}>
-                    <Text style={styles.deviceName}>{device.name ?? 'Unknown'}</Text>
-                    <Text style={styles.deviceId}>{device.id}</Text>
-                  </View>
-                  <Ionicons name="chevron-forward" size={18} color="#64748b" />
+        <Animated.View style={[styles.card, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}>
+          
+          {/* ── STEP: SCAN ── */}
+          {step === 'scan' && (
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>Searching for Device</Text>
+              <Text style={styles.sectionDesc}>
+                Plug in your PillPal and ensure the blue light is blinking.
+              </Text>
+
+              <TouchableOpacity 
+                style={[styles.primaryBtn, ble.status === 'scanning' && styles.btnDisabled]} 
+                onPress={ble.scan}
+                disabled={ble.status === 'scanning'}
+              >
+                {ble.status === 'scanning' ? (
+                  <ActivityIndicator color="#fff" size="small" />
+                ) : (
+                  <>
+                    <Ionicons name="search" size={20} color="#fff" style={{ marginRight: 8 }} />
+                    <Text style={styles.btnText}>Find My PillPal</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+
+              {ble.foundDevices.length > 0 && (
+                <View style={styles.deviceList}>
+                  <Text style={styles.listLabel}>Devices Found:</Text>
+                  {ble.foundDevices.map(d => (
+                    <TouchableOpacity key={d.id} style={styles.deviceItem} onPress={() => onSelectDevice(d)}>
+                      <View style={styles.deviceIcon}>
+                        <Ionicons name="hardware-chip-outline" size={24} color="#6366f1" />
+                      </View>
+                      <View style={styles.deviceInfo}>
+                        <Text style={styles.deviceName}>{d.name || 'Unknown Device'}</Text>
+                        <Text style={styles.deviceId}>{d.id}</Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={20} color="#475569" />
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              )}
+
+              {ble.foundDevices.length === 0 && ble.status !== 'scanning' && (
+                <View style={styles.emptyState}>
+                  <Ionicons name="bluetooth-outline" size={48} color="#1e293b" />
+                  <Text style={styles.emptyText}>Tap the button above to start scanning</Text>
+                </View>
+              )}
+            </View>
+          )}
+
+          {/* ── STEP: WIFI ── */}
+          {step === 'wifi' && (
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>Connect to WiFi</Text>
+              <Text style={styles.sectionDesc}>
+                PillPal needs WiFi to sync your medication schedule with the cloud.
+              </Text>
+
+              <View style={styles.inputGroup}>
+                <Text style={styles.label}>WiFi Network Name (SSID)</Text>
+                <View style={styles.inputWrap}>
+                  <Ionicons name="wifi-outline" size={18} color="#64748b" style={styles.inputIcon} />
+                  <TextInput 
+                    style={styles.input}
+                    placeholder="MyHomeWiFi"
+                    placeholderTextColor="#475569"
+                    value={ssid}
+                    onChangeText={setSsid}
+                    autoCapitalize="none"
+                  />
+                </View>
+              </View>
+
+              <View style={styles.inputGroup}>
+                <Text style={styles.label}>WiFi Password</Text>
+                <View style={styles.inputWrap}>
+                  <Ionicons name="lock-closed-outline" size={18} color="#64748b" style={styles.inputIcon} />
+                  <TextInput 
+                    style={styles.input}
+                    placeholder="Password"
+                    placeholderTextColor="#475569"
+                    value={wifiPass}
+                    onChangeText={setWifiPass}
+                    secureTextEntry
+                  />
+                </View>
+              </View>
+
+              <TouchableOpacity style={styles.primaryBtn} onPress={onSendCredentials}>
+                <Text style={styles.btnText}>Connect Device</Text>
+                <Ionicons name="arrow-forward" size={20} color="#fff" style={{ marginLeft: 8 }} />
+              </TouchableOpacity>
+              
+              <TouchableOpacity style={styles.textBtn} onPress={() => { ble.disconnect(); setStep('scan'); }}>
+                <Text style={styles.textBtnLabel}>Try different device</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+
+          {/* ── STEP: WAIT ── */}
+          {step === 'wait' && (
+            <View style={[styles.section, styles.centeredSection]}>
+              <View style={styles.statusIconWrap}>
+                {ble.status === 'error' ? (
+                  <Ionicons name="alert-circle-outline" size={64} color="#ef4444" />
+                ) : (
+                  <ActivityIndicator size="large" color="#6366f1" />
+                )}
+              </View>
+              <Text style={styles.sectionTitle}>
+                {ble.status === 'error' ? 'Connection Failed' : 'Linking Device...'}
+              </Text>
+              <Text style={styles.sectionDescCentered}>{ble.statusMessage}</Text>
+
+              {ble.status === 'error' && (
+                <TouchableOpacity style={styles.primaryBtn} onPress={() => setStep('wifi')}>
+                  <Text style={styles.btnText}>Try Again</Text>
                 </TouchableOpacity>
-              ))}
+              )}
             </View>
           )}
 
-          {ble.foundDevices.length === 0 && ble.status === 'idle' && (
-            <View style={styles.emptyState}>
-              <Text style={styles.emptyIcon}>📡</Text>
-              <Text style={styles.emptyText}>No devices found yet. Tap Scan to search.</Text>
+          {/* ── STEP: REGISTER ── */}
+          {step === 'register' && (
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>Device Identified!</Text>
+              <Text style={styles.sectionDesc}>
+                We've successfully linked to your PillPal. One final step to register it to your account.
+              </Text>
+
+              <View style={styles.idBadge}>
+                <Text style={styles.idLabel}>Serial Number</Text>
+                <Text style={styles.idValue}>{serialNumber || 'Checking...'}</Text>
+              </View>
+
+              <TouchableOpacity 
+                style={[styles.primaryBtn, loading && styles.btnDisabled]} 
+                onPress={onFinalRegister}
+                disabled={loading}
+              >
+                {loading ? (
+                  <ActivityIndicator color="#fff" size="small" />
+                ) : (
+                  <>
+                    <Ionicons name="cloud-upload-outline" size={20} color="#fff" style={{ marginRight: 8 }} />
+                    <Text style={styles.btnText}>Complete Registration</Text>
+                  </>
+                )}
+              </TouchableOpacity>
             </View>
           )}
 
-          {/* Skip BLE — manual serial entry */}
-          <TouchableOpacity style={styles.skipLink} onPress={() => setStep('register')}>
-            <Text style={styles.skipText}>Skip Bluetooth → Enter serial number manually</Text>
-          </TouchableOpacity>
-        </View>
-      )}
+          {/* ── STEP: SUCCESS ── */}
+          {step === 'success' && (
+            <View style={[styles.section, styles.centeredSection]}>
+              <View style={[styles.statusIconWrap, { backgroundColor: '#052e16', borderColor: '#166534' }]}>
+                <Ionicons name="checkmark-done-circle" size={64} color="#10b981" />
+              </View>
+              <Text style={styles.sectionTitle}>Success!</Text>
+              <Text style={styles.sectionDescCentered}>
+                Your PillPal is now fully configured and linked to your account.
+              </Text>
 
-      {/* ── WIFI STEP ─────────────────────────────────────────────────────── */}
-      {step === 'wifi' && (
-        <View style={styles.section}>
-          <View style={styles.connectedBadge}>
-            <Ionicons name="bluetooth" size={16} color="#6366f1" />
-            <Text style={styles.connectedText}>
-              Connected to {ble.selectedDevice?.name}
-            </Text>
-          </View>
-
-          <Text style={styles.instruction}>
-            Enter your home WiFi credentials. The dispenser needs WiFi to sync with the cloud.
-          </Text>
-
-          <Text style={styles.label}>WiFi Network Name (SSID)</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="MyHomeWiFi"
-            placeholderTextColor="#64748b"
-            autoCapitalize="none"
-            value={ssid}
-            onChangeText={setSsid}
-          />
-
-          <Text style={styles.label}>WiFi Password</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="••••••••"
-            placeholderTextColor="#64748b"
-            secureTextEntry
-            value={wifiPass}
-            onChangeText={setWifiPass}
-          />
-
-          <TouchableOpacity style={styles.btn} onPress={handleProvision}>
-            <Ionicons name="wifi" size={18} color="#fff" style={{ marginRight: 8 }} />
-            <Text style={styles.btnText}>Send to Device</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity style={styles.backLink} onPress={() => { ble.disconnect(); setStep('scan') }}>
-            <Text style={styles.backText}>← Back to scan</Text>
-          </TouchableOpacity>
-        </View>
-      )}
-
-      {/* ── PROVISIONING ──────────────────────────────────────────────────── */}
-      {step === 'provisioning' && (
-        <View style={[styles.section, styles.center]}>
-          <ActivityIndicator size="large" color="#6366f1" />
-          <Text style={styles.waitTitle}>Connecting...</Text>
-          <Text style={styles.statusMsg}>{ble.statusMessage}</Text>
-          {ble.status === 'error' && (
-            <TouchableOpacity style={styles.btnOutline} onPress={() => setStep('wifi')}>
-              <Text style={styles.btnOutlineText}>Try Again</Text>
-            </TouchableOpacity>
+              <TouchableOpacity style={styles.primaryBtn} onPress={() => router.replace('/(tabs)')}>
+                <Text style={styles.btnText}>Enter Dashboard</Text>
+                <Ionicons name="home-outline" size={20} color="#fff" style={{ marginLeft: 8 }} />
+              </TouchableOpacity>
+            </View>
           )}
-        </View>
-      )}
 
-      {/* ── REGISTER STEP ─────────────────────────────────────────────────── */}
-      {step === 'register' && (
-        <View style={styles.section}>
-          <Text style={styles.instruction}>
-            Enter the serial number printed on the bottom of your PillPal device.
-          </Text>
-          <Text style={styles.label}>Serial Number</Text>
-          <TextInput
-            style={[styles.input, styles.inputMono]}
-            placeholder="SN-A1B2C3"
-            placeholderTextColor="#64748b"
-            autoCapitalize="characters"
-            value={serialNumber}
-            onChangeText={setSerialNumber}
-          />
-          <TouchableOpacity
-            style={[styles.btn, regLoading && styles.btnDisabled]}
-            onPress={handleRegister}
-            disabled={regLoading}
-          >
-            {regLoading
-              ? <ActivityIndicator color="#fff" />
-              : <Text style={styles.btnText}>Register Device</Text>
-            }
-          </TouchableOpacity>
-        </View>
-      )}
-    </ScrollView>
+        </Animated.View>
+
+        <Text style={styles.footerText}>
+          Issues? Hold the reset button on your device for 5 seconds to re-enter pairing mode.
+        </Text>
+
+      </ScrollView>
+    </KeyboardAvoidingView>
   )
 }
 
 const styles = StyleSheet.create({
-  container:      { flex: 1, backgroundColor: '#0f172a' },
-  inner:          { paddingHorizontal: 24, paddingVertical: 56 },
-  center:         { alignItems: 'center', justifyContent: 'center', flex: 1 },
-  header:         { marginBottom: 28 },
-  step:           { fontSize: 12, fontWeight: '700', color: '#6366f1', letterSpacing: 1.5, textTransform: 'uppercase', marginBottom: 8 },
-  title:          { fontSize: 28, fontWeight: '800', color: '#f8fafc', marginBottom: 8 },
-  subtitle:       { fontSize: 14, color: '#64748b', lineHeight: 20 },
-  progressRow:    { flexDirection: 'row', alignItems: 'center', marginBottom: 32 },
-  progressDot:    { width: 12, height: 12, borderRadius: 6, backgroundColor: '#334155' },
-  progressActive: { backgroundColor: '#6366f1' },
-  progressLine:   { flex: 1, height: 2, backgroundColor: '#334155', marginHorizontal: 6 },
-  section:        { gap: 14 },
-  instruction:    { fontSize: 14, color: '#94a3b8', lineHeight: 22, marginBottom: 4 },
-  btn:            {
-    backgroundColor: '#6366f1', borderRadius: 14, paddingVertical: 15,
-    alignItems: 'center', flexDirection: 'row', justifyContent: 'center',
+  container: { flex: 1, backgroundColor: '#0f172a' },
+  scrollContent: { flexGrow: 1, paddingBottom: 40 },
+  header: { 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    justifyContent: 'space-between', 
+    paddingHorizontal: 20, 
+    paddingTop: 50, 
+    paddingBottom: 20 
   },
-  btnDisabled:    { opacity: 0.6 },
-  btnText:        { color: '#fff', fontWeight: '700', fontSize: 15 },
-  btnOutline:     {
-    borderWidth: 1, borderColor: '#6366f1', borderRadius: 14,
-    paddingVertical: 12, paddingHorizontal: 24, marginTop: 12
+  backBtn: { padding: 8, borderRadius: 12, backgroundColor: '#1e293b' },
+  headerTitle: { fontSize: 18, fontWeight: '700', color: '#f8fafc' },
+  
+  stepsRow: { flexDirection: 'row', justifyContent: 'center', paddingHorizontal: 40, marginBottom: 24 },
+  stepItem: { flex: 1, alignItems: 'center', position: 'relative' },
+  stepCircle: { 
+    width: 32, height: 32, borderRadius: 16, 
+    backgroundColor: '#1e293b', alignItems: 'center', 
+    justifyContent: 'center', borderWidth: 1, borderColor: '#334155',
+    zIndex: 2
   },
-  btnOutlineText: { color: '#818cf8', fontWeight: '600', fontSize: 15 },
-  statusMsg:      { fontSize: 13, color: '#64748b', textAlign: 'center' },
-  label:          { fontSize: 13, fontWeight: '600', color: '#94a3b8' },
-  input:          {
-    backgroundColor: '#1e293b', color: '#f8fafc', borderRadius: 14,
-    paddingHorizontal: 16, paddingVertical: 14, fontSize: 15,
-    borderWidth: 1, borderColor: '#334155',
+  stepCircleActive: { backgroundColor: '#6366f1', borderColor: '#818cf8', elevation: 4 },
+  stepCircleDone: { backgroundColor: '#10b981', borderColor: '#34d399' },
+  stepLabel: { fontSize: 10, color: '#64748b', marginTop: 6, fontWeight: '600' },
+  stepLabelActive: { color: '#f8fafc' },
+  stepLine: { 
+    position: 'absolute', top: 16, left: '50%', right: '-50%', 
+    height: 2, backgroundColor: '#1e293b', zIndex: 1 
   },
-  inputMono:      { fontFamily: 'monospace', letterSpacing: 2 },
-  sectionLabel:   { fontSize: 12, fontWeight: '700', color: '#64748b', letterSpacing: 1, textTransform: 'uppercase' },
-  deviceList:     { gap: 8 },
-  deviceRow:      {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: '#1e293b',
-    borderRadius: 14, padding: 14, borderWidth: 1, borderColor: '#334155',
+
+  card: { 
+    marginHorizontal: 20, backgroundColor: '#1e293b', 
+    borderRadius: 28, padding: 24, borderWidth: 1, borderColor: '#334155',
+    minHeight: 400, justifyContent: 'center'
   },
-  deviceName:     { fontSize: 15, fontWeight: '600', color: '#f8fafc' },
-  deviceId:       { fontSize: 11, color: '#64748b', marginTop: 2 },
-  emptyState:     { alignItems: 'center', paddingVertical: 24, gap: 8 },
-  emptyIcon:      { fontSize: 36 },
-  emptyText:      { fontSize: 13, color: '#64748b', textAlign: 'center' },
-  skipLink:       { alignItems: 'center', paddingVertical: 8 },
-  skipText:       { fontSize: 13, color: '#6366f1' },
-  backLink:       { alignItems: 'center' },
-  backText:       { fontSize: 13, color: '#64748b' },
-  connectedBadge: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: '#1e293b', borderRadius: 20, paddingHorizontal: 14,
-    paddingVertical: 8, alignSelf: 'flex-start', borderWidth: 1, borderColor: '#334155'
+  section: { gap: 20 },
+  centeredSection: { alignItems: 'center', textAlign: 'center' },
+  sectionTitle: { fontSize: 24, fontWeight: '800', color: '#f8fafc' },
+  sectionDesc: { fontSize: 14, color: '#94a3b8', lineHeight: 22 },
+  sectionDescCentered: { fontSize: 14, color: '#94a3b8', lineHeight: 22, textAlign: 'center' },
+
+  primaryBtn: { 
+    backgroundColor: '#6366f1', borderRadius: 16, height: 56, 
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    shadowColor: '#6366f1', shadowOffset: { width: 0, height: 4 }, 
+    shadowOpacity: 0.3, shadowRadius: 8, elevation: 4
   },
-  connectedText:  { fontSize: 13, color: '#818cf8', fontWeight: '600' },
-  doneTitle:      { fontSize: 28, fontWeight: '800', color: '#f8fafc', marginTop: 16, marginBottom: 8 },
-  doneSubtitle:   { fontSize: 14, color: '#64748b', textAlign: 'center', marginBottom: 32, lineHeight: 22 },
-  waitTitle:      { fontSize: 18, fontWeight: '700', color: '#f8fafc', marginTop: 20, marginBottom: 8 },
+  btnDisabled: { opacity: 0.5 },
+  btnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
+  textBtn: { alignItems: 'center', paddingTop: 8 },
+  textBtnLabel: { color: '#64748b', fontSize: 14, fontWeight: '600' },
+
+  deviceList: { marginTop: 10, gap: 10 },
+  listLabel: { fontSize: 12, color: '#64748b', fontWeight: '700', textTransform: 'uppercase', letterSpacing: 1 },
+  deviceItem: { 
+    flexDirection: 'row', alignItems: 'center', backgroundColor: '#0f172a',
+    padding: 12, borderRadius: 16, borderWidth: 1, borderColor: '#334155'
+  },
+  deviceIcon: { width: 44, height: 44, borderRadius: 12, backgroundColor: '#1e1b4b', alignItems: 'center', justifyContent: 'center' },
+  deviceInfo: { flex: 1, marginLeft: 12 },
+  deviceName: { color: '#f8fafc', fontWeight: '700', fontSize: 15 },
+  deviceId: { color: '#475569', fontSize: 11, marginTop: 2 },
+
+  emptyState: { alignItems: 'center', paddingVertical: 40, gap: 12 },
+  emptyText: { color: '#475569', fontSize: 13, textAlign: 'center' },
+
+  inputGroup: { gap: 8 },
+  label: { fontSize: 13, fontWeight: '700', color: '#94a3b8' },
+  inputWrap: { 
+    flexDirection: 'row', alignItems: 'center', backgroundColor: '#0f172a', 
+    borderRadius: 16, borderWidth: 1, borderColor: '#334155', paddingHorizontal: 16 
+  },
+  inputIcon: { marginRight: 10 },
+  input: { flex: 1, color: '#f8fafc', fontSize: 15, paddingVertical: 16 },
+
+  statusIconWrap: { 
+    width: 100, height: 100, borderRadius: 32, 
+    backgroundColor: '#1e1b4b', alignItems: 'center', 
+    justifyContent: 'center', marginBottom: 20,
+    borderWidth: 1, borderColor: '#334155'
+  },
+
+  idBadge: { 
+    backgroundColor: '#0f172a', padding: 16, borderRadius: 16, 
+    borderWidth: 1, borderColor: '#334155', alignItems: 'center', gap: 4
+  },
+  idLabel: { color: '#64748b', fontSize: 11, fontWeight: '700', textTransform: 'uppercase' },
+  idValue: { color: '#f8fafc', fontSize: 24, fontWeight: '800', letterSpacing: 2 },
+
+  footerText: { 
+    textAlign: 'center', color: '#334155', fontSize: 12, 
+    paddingHorizontal: 40, marginTop: 30, lineHeight: 18 
+  }
 })
