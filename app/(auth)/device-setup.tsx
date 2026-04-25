@@ -79,7 +79,8 @@ export default function DeviceSetupScreen() {
     const { error } = await registerDevice(serialNumber)
     setLoading(false)
     if (error) {
-      Alert.alert('Registration Error', error.message)
+      const msg = typeof error === 'string' ? error : error.message
+      Alert.alert('Registration Error', msg)
     } else {
       setStep('success')
     }
