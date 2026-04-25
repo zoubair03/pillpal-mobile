@@ -1,39 +1,50 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import {
   View, Text, TextInput, TouchableOpacity,
   StyleSheet, KeyboardAvoidingView, Platform,
-  ActivityIndicator, Alert, ScrollView
+  ActivityIndicator, ScrollView, Animated
 } from 'react-native'
 import { useRouter } from 'expo-router'
-import { useSupabase } from '@/hooks/useSupabase'
+import { Ionicons } from '@expo/vector-icons'
+import { supabase } from '@/lib/supabase'
 
 export default function RegisterScreen() {
-  const router       = useRouter()
-  const { signUp }   = useSupabase()
-  const [email,    setEmail]    = useState('')
-  const [password, setPassword] = useState('')
-  const [confirm,  setConfirm]  = useState('')
-  const [loading,  setLoading]  = useState(false)
+  const router    = useRouter()
+  const [name,    setName]    = useState('')
+  const [phone,   setPhone]   = useState('')
+  const [email,   setEmail]   = useState('')
+  const [error,   setError]   = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+  const fadeAnim  = useRef(new Animated.Value(0)).current
+  const slideAnim = useRef(new Animated.Value(30)).current
+
+  useEffect(() => {
+    Animated.parallel([
+      Animated.timing(fadeAnim,  { toValue: 1, duration: 600, useNativeDriver: true }),
+      Animated.timing(slideAnim, { toValue: 0, duration: 600, useNativeDriver: true }),
+    ]).start()
+  }, [])
 
   const handleRegister = async () => {
-    if (!email || !password || !confirm) {
-      Alert.alert('Error', 'Please fill in all fields.'); return
+    if (!name.trim() || !phone.trim() || !email.trim()) {
+      setError('Please fill in all fields.'); return
     }
-    if (password !== confirm) {
-      Alert.alert('Error', 'Passwords do not match.'); return
-    }
-    if (password.length < 6) {
-      Alert.alert('Error', 'Password must be at least 6 characters.'); return
-    }
+    setError(null)
     setLoading(true)
-    const { error } = await signUp(email.trim(), password)
+
+    const { error: authError } = await supabase.auth.signInWithOtp({
+      email: email.trim().toLowerCase(),
+      options: {
+        shouldCreateUser: true,
+        data: { full_name: name.trim(), phone: phone.trim() },
+      },
+    })
+
     setLoading(false)
-    if (error) {
-      Alert.alert('Registration Failed', error.message)
+    if (authError) {
+      setError(authError.message)
     } else {
-      // AuthGuard will push to profile-setup after email confirmation
-      Alert.alert('Account created!', 'Please check your email to confirm your account, then sign in.')
-      router.replace('/(auth)/login')
+      router.push({ pathname: '/(auth)/verify', params: { email: email.trim().toLowerCase() } })
     }
   }
 
@@ -43,89 +54,138 @@ export default function RegisterScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       <ScrollView contentContainerStyle={styles.inner} keyboardShouldPersistTaps="handled">
-        {/* Header */}
-        <View style={styles.header}>
-          <Text style={styles.logo}>💊</Text>
-          <Text style={styles.title}>Create Account</Text>
-          <Text style={styles.subtitle}>Join PillPal today</Text>
-        </View>
+        <Animated.View style={[styles.content, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}>
 
-        {/* Form */}
-        <View style={styles.form}>
-          <Text style={styles.label}>Email</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="you@example.com"
-            placeholderTextColor="#64748b"
-            keyboardType="email-address"
-            autoCapitalize="none"
-            value={email}
-            onChangeText={setEmail}
-          />
-
-          <Text style={styles.label}>Password</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="At least 6 characters"
-            placeholderTextColor="#64748b"
-            secureTextEntry
-            value={password}
-            onChangeText={setPassword}
-          />
-
-          <Text style={styles.label}>Confirm Password</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="Repeat password"
-            placeholderTextColor="#64748b"
-            secureTextEntry
-            value={confirm}
-            onChangeText={setConfirm}
-          />
-
-          <TouchableOpacity
-            style={[styles.btn, loading && styles.btnDisabled]}
-            onPress={handleRegister}
-            disabled={loading}
-          >
-            {loading
-              ? <ActivityIndicator color="#fff" />
-              : <Text style={styles.btnText}>Create Account</Text>
-            }
+          {/* Back */}
+          <TouchableOpacity style={styles.back} onPress={() => router.back()}>
+            <Ionicons name="arrow-back" size={20} color="#94a3b8" />
+            <Text style={styles.backText}>Back to login</Text>
           </TouchableOpacity>
 
-          <TouchableOpacity style={styles.link} onPress={() => router.back()}>
-            <Text style={styles.linkText}>
-              Already have an account? <Text style={styles.linkBold}>Sign in</Text>
-            </Text>
-          </TouchableOpacity>
-        </View>
+          {/* Brand */}
+          <View style={styles.brand}>
+            <View style={styles.iconWrap}>
+              <Text style={styles.pill}>💊</Text>
+            </View>
+            <Text style={styles.title}>Create your account</Text>
+            <Text style={styles.subtitle}>Set up your PillPal account with a secure email code.</Text>
+          </View>
+
+          {/* Card */}
+          <View style={styles.card}>
+            {error && (
+              <View style={styles.errorBox}>
+                <Ionicons name="warning-outline" size={16} color="#f87171" />
+                <Text style={styles.errorText}>{error}</Text>
+              </View>
+            )}
+
+            {/* Full Name */}
+            <View style={styles.field}>
+              <Text style={styles.label}>Full Name</Text>
+              <View style={styles.inputWrap}>
+                <Ionicons name="person-outline" size={18} color="#64748b" style={styles.inputIcon} />
+                <TextInput
+                  style={styles.input}
+                  placeholder="Ahmed Ben Ali"
+                  placeholderTextColor="#475569"
+                  autoCapitalize="words"
+                  value={name}
+                  onChangeText={setName}
+                  editable={!loading}
+                />
+              </View>
+            </View>
+
+            {/* Phone */}
+            <View style={styles.field}>
+              <Text style={styles.label}>Phone Number</Text>
+              <View style={styles.inputWrap}>
+                <Ionicons name="call-outline" size={18} color="#64748b" style={styles.inputIcon} />
+                <TextInput
+                  style={styles.input}
+                  placeholder="+216 XX XXX XXX"
+                  placeholderTextColor="#475569"
+                  keyboardType="phone-pad"
+                  value={phone}
+                  onChangeText={setPhone}
+                  editable={!loading}
+                />
+              </View>
+            </View>
+
+            {/* Email */}
+            <View style={styles.field}>
+              <Text style={styles.label}>Email address</Text>
+              <View style={styles.inputWrap}>
+                <Ionicons name="mail-outline" size={18} color="#64748b" style={styles.inputIcon} />
+                <TextInput
+                  style={styles.input}
+                  placeholder="name@example.com"
+                  placeholderTextColor="#475569"
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  autoComplete="email"
+                  value={email}
+                  onChangeText={setEmail}
+                  editable={!loading}
+                />
+              </View>
+            </View>
+
+            <TouchableOpacity
+              style={[styles.btn, loading && styles.btnDisabled]}
+              onPress={handleRegister}
+              disabled={loading}
+              activeOpacity={0.85}
+            >
+              {loading
+                ? <ActivityIndicator color="#fff" size="small" />
+                : <>
+                    <Ionicons name="person-add-outline" size={18} color="#fff" style={{ marginRight: 8 }} />
+                    <Text style={styles.btnText}>Send Verification Code</Text>
+                  </>
+              }
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.loginLink} onPress={() => router.replace('/(auth)/login')}>
+              <Text style={styles.loginText}>
+                Already have an account? <Text style={styles.loginBold}>Sign in</Text>
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          <Text style={styles.footer}>Secured by Supabase Auth · No passwords stored</Text>
+        </Animated.View>
       </ScrollView>
     </KeyboardAvoidingView>
   )
 }
 
 const styles = StyleSheet.create({
-  container:  { flex: 1, backgroundColor: '#0f172a' },
-  inner:      { flexGrow: 1, justifyContent: 'center', paddingHorizontal: 28, paddingVertical: 40 },
-  header:     { alignItems: 'center', marginBottom: 36 },
-  logo:       { fontSize: 48, marginBottom: 8 },
-  title:      { fontSize: 28, fontWeight: '800', color: '#f8fafc' },
-  subtitle:   { fontSize: 14, color: '#64748b', marginTop: 4 },
-  form:       { gap: 12 },
-  label:      { fontSize: 13, fontWeight: '600', color: '#94a3b8', marginBottom: -6 },
-  input:      {
-    backgroundColor: '#1e293b', color: '#f8fafc', borderRadius: 14,
-    paddingHorizontal: 16, paddingVertical: 14, fontSize: 15,
-    borderWidth: 1, borderColor: '#334155',
-  },
-  btn:        {
-    backgroundColor: '#6366f1', borderRadius: 14, paddingVertical: 15,
-    alignItems: 'center', marginTop: 8,
-  },
+  container:   { flex: 1, backgroundColor: '#0f172a' },
+  inner:       { flexGrow: 1, paddingHorizontal: 24, paddingVertical: 48 },
+  content:     { gap: 20 },
+  back:        { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  backText:    { color: '#94a3b8', fontSize: 14 },
+  brand:       { alignItems: 'center', gap: 12 },
+  iconWrap:    { width: 64, height: 64, borderRadius: 20, alignItems: 'center', justifyContent: 'center', backgroundColor: '#6366f1', shadowColor: '#6366f1', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.4, shadowRadius: 16, elevation: 8 },
+  pill:        { fontSize: 32 },
+  title:       { fontSize: 26, fontWeight: '800', color: '#f8fafc', textAlign: 'center' },
+  subtitle:    { fontSize: 14, color: '#64748b', textAlign: 'center', lineHeight: 20 },
+  card:        { backgroundColor: '#1e293b', borderRadius: 24, padding: 24, borderWidth: 1, borderColor: '#334155', gap: 14 },
+  errorBox:    { flexDirection: 'row', alignItems: 'flex-start', gap: 8, backgroundColor: '#450a0a', borderRadius: 12, padding: 12, borderWidth: 1, borderColor: '#7f1d1d' },
+  errorText:   { color: '#fca5a5', fontSize: 13, flex: 1, lineHeight: 18 },
+  field:       { gap: 6 },
+  label:       { fontSize: 13, fontWeight: '700', color: '#94a3b8' },
+  inputWrap:   { flexDirection: 'row', alignItems: 'center', backgroundColor: '#0f172a', borderRadius: 14, borderWidth: 1, borderColor: '#334155', paddingHorizontal: 14 },
+  inputIcon:   { marginRight: 8 },
+  input:       { flex: 1, color: '#f8fafc', fontSize: 15, paddingVertical: 14 },
+  btn:         { backgroundColor: '#6366f1', borderRadius: 14, paddingVertical: 15, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', shadowColor: '#6366f1', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4 },
   btnDisabled: { opacity: 0.6 },
-  btnText:    { color: '#fff', fontWeight: '700', fontSize: 16 },
-  link:       { alignItems: 'center', marginTop: 8 },
-  linkText:   { color: '#64748b', fontSize: 14 },
-  linkBold:   { color: '#818cf8', fontWeight: '700' },
+  btnText:     { color: '#fff', fontWeight: '700', fontSize: 16 },
+  loginLink:   { alignItems: 'center' },
+  loginText:   { color: '#64748b', fontSize: 14 },
+  loginBold:   { color: '#818cf8', fontWeight: '700' },
+  footer:      { textAlign: 'center', fontSize: 11, color: '#334155' },
 })

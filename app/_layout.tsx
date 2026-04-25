@@ -1,64 +1,91 @@
-import { useEffect } from 'react'
- import { View, Text, ActivityIndicator, StyleSheet } from 'react-native'
+import { useEffect, useState } from 'react'
 import { Stack, useRouter, useSegments } from 'expo-router'
 import { StatusBar } from 'expo-status-bar'
 import { GestureHandlerRootView } from 'react-native-gesture-handler'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
-import { useSupabase } from '@/hooks/useSupabase'
+import { supabase } from '@/lib/supabase'
+import type { Session } from '@supabase/supabase-js'
 
-// ── Auth Guard ────────────────────────────────────────────────────────────────
-// Redirects the user based on session + profile + device state.
+// ── Auth Guard ─────────────────────────────────────────────────────────────────
 function AuthGuard() {
-  const { session, loading, profile, device } = useSupabase()
-  const segments = useSegments()
   const router   = useRouter()
+  const segments = useSegments()
 
+  const [session, setSession] = useState<Session | null | undefined>(undefined)
+  const [profile, setProfile] = useState<{ full_name: string | null } | null>(null)
+  const [hasDevice, setHasDevice] = useState<boolean | null>(null)
+
+  // 1. Listen for auth state changes
   useEffect(() => {
-    if (loading) return
+    supabase.auth.getSession().then(({ data: { session } }) => setSession(session))
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session)
+    })
+    return () => listener.subscription.unsubscribe()
+  }, [])
+
+  // 2. Load profile + device when session changes
+  useEffect(() => {
+    if (!session) {
+      setProfile(null)
+      setHasDevice(null)
+      return
+    }
+    supabase
+      .from('profiles')
+      .select('full_name')
+      .eq('id', session.user.id)
+      .single()
+      .then(({ data }) => setProfile(data))
+
+    supabase
+      .from('devices')
+      .select('id')
+      .eq('owner_id', session.user.id)
+      .single()
+      .then(({ data }) => setHasDevice(!!data))
+  }, [session?.user.id])
+
+  // 3. Redirect based on state
+  useEffect(() => {
+    if (session === undefined) return  // still loading
 
     const inAuth = segments[0] === '(auth)'
+    const inTabs = segments[0] === '(tabs)'
 
     if (!session) {
-      // Not logged in → always go to login
+      // Not logged in — only allow auth screens
       if (!inAuth) router.replace('/(auth)/login')
+      return
+    }
 
-    } else if (!profile?.full_name) {
-      // Logged in but no profile → profile setup
-      router.replace('/(auth)/profile-setup')
+    // Logged in but profile/device not yet loaded
+    if (profile === null || hasDevice === null) return
 
-    } else if (!device) {
-      // Logged in + profile but no device → device setup
-      router.replace('/(auth)/device-setup')
-
+    if (!profile?.full_name) {
+      // Need profile setup
+      const onSetup = segments[1] === 'profile-setup' || segments[1] === 'verify'
+      if (!onSetup) router.replace('/(auth)/profile-setup')
+    } else if (!hasDevice) {
+      // Need device setup
+      if (segments[1] !== 'device-setup') router.replace('/(auth)/device-setup')
     } else {
-      // Fully set up → main tabs
+      // Fully set up → go to tabs
       if (inAuth) router.replace('/(tabs)')
     }
-  }, [session, loading, profile, device])
-
-  // Show branded splash while Supabase resolves the session
-  if (loading) {
-    return (
-      <View style={loadingStyles.container}>
-        <Text style={loadingStyles.logo}>💊</Text>
-        <Text style={loadingStyles.title}>PillPal</Text>
-        <ActivityIndicator size="large" color="#6366f1" style={{ marginTop: 32 }} />
-        <Text style={loadingStyles.subtitle}>Loading your profile...</Text>
-      </View>
-    )
-  }
+  }, [session, profile, hasDevice, segments])
 
   return null
 }
 
-// ── Root Layout ───────────────────────────────────────────────────────────────
+// ── Root Layout ────────────────────────────────────────────────────────────────
 export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
         <StatusBar style="light" />
         <AuthGuard />
-        <Stack screenOptions={{ headerShown: false }}>
+        <Stack screenOptions={{ headerShown: false, animation: 'slide_from_right', contentStyle: { backgroundColor: '#0f172a' } }}>
           <Stack.Screen name="(auth)" />
           <Stack.Screen name="(tabs)" />
         </Stack>
@@ -66,26 +93,3 @@ export default function RootLayout() {
     </GestureHandlerRootView>
   )
 }
-
-// ── Loading splash styles ─────────────────────────────────────────────────────
-const loadingStyles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#0f172a',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-  },
-  logo: { fontSize: 64 },
-  title: {
-    fontSize: 32,
-    fontWeight: '800',
-    color: '#f8fafc',
-    letterSpacing: -0.5,
-  },
-  subtitle: {
-    fontSize: 14,
-    color: '#475569',
-    marginTop: 8,
-  },
-})
