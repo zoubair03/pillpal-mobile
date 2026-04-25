@@ -138,6 +138,12 @@ export function useBLE(): UseBLEReturn {
 
     try {
       const connected = await device.connect({ autoConnect: false })
+      
+      // Request larger MTU for WiFi list transfer
+      if (Platform.OS === 'android') {
+        await connected.requestMTU(512)
+      }
+      
       await connected.discoverAllServicesAndCharacteristics()
       setSelectedDevice(connected)
       setStatus('connected')
@@ -200,12 +206,26 @@ export function useBLE(): UseBLEReturn {
   const getWifiList = useCallback(async (): Promise<string[]> => {
     if (!selectedDevice) return []
     try {
+      // First try a direct read
       const char = await selectedDevice.readCharacteristicForService(
         BLE_SERVICE_UUID, BLE_WIFI_LIST_UUID
       )
       if (!char?.value) return []
       const listStr = fromBase64(char.value)
-      if (listStr === 'SCANNING...' || listStr === 'NONE') return []
+      
+      // If it's still scanning, wait and retry once
+      if (listStr === 'SCANNING...') {
+        await new Promise(r => setTimeout(r, 2000))
+        const retryChar = await selectedDevice.readCharacteristicForService(
+          BLE_SERVICE_UUID, BLE_WIFI_LIST_UUID
+        )
+        if (!retryChar?.value) return []
+        const retryStr = fromBase64(retryChar.value)
+        if (retryStr === 'SCANNING...' || retryStr === 'NONE') return []
+        return retryStr.split(',').filter(s => s.length > 0)
+      }
+
+      if (listStr === 'NONE') return []
       return listStr.split(',').filter(s => s.length > 0)
     } catch (err) {
       console.error('Failed to read wifi list:', err)
